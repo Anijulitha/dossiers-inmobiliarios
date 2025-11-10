@@ -3,7 +3,8 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 from datetime import datetime, timedelta
-from database_manager import DatabaseManager
+import sqlite3
+import os
 
 def main():
     st.set_page_config(
@@ -15,8 +16,13 @@ def main():
     st.title("🏠 Dossiers Inmobiliarios - Base de Datos Completa")
     st.markdown("---")
     
-    # Inicializar base de datos
-    db = DatabaseManager()
+    # Obtener datos
+    df = obtener_datos_db()
+    
+    if df.empty:
+        st.warning("📭 No hay datos en la base de datos. Ejecuta primero: ⁠ python extractor_dossiers.py ⁠")
+        st.info("💡 El sistema funciona, pero necesitas analizar algunos PDFs primero.")
+        return
     
     # Sidebar
     st.sidebar.title("🔍 Filtros Avanzados")
@@ -26,13 +32,14 @@ def main():
     fecha_min = st.sidebar.date_input("Desde:", datetime.now() - timedelta(days=30))
     fecha_max = st.sidebar.date_input("Hasta:", datetime.now())
     
-    # Obtener datos
-    df = db.obtener_todas_propiedades()
-    df['fecha_analisis'] = pd.to_datetime(df['fecha_analisis'])
-    
     # Aplicar filtros de fecha
+    df['fecha_analisis'] = pd.to_datetime(df['fecha_analisis'])
     mask = (df['fecha_analisis'].dt.date >= fecha_min) & (df['fecha_analisis'].dt.date <= fecha_max)
     df_filtrado = df[mask]
+    
+    if df_filtrado.empty:
+        st.warning("No hay propiedades en el rango de fechas seleccionado.")
+        df_filtrado = df
     
     # KPIs
     col1, col2, col3, col4 = st.columns(4)
@@ -56,7 +63,7 @@ def main():
     st.markdown("---")
     
     # Pestañas
-    tab1, tab2, tab3, tab4 = st.tabs(["📋 Propiedades", "📈 Estadísticas", "📊 Evolución", "🔍 Búsqueda"])
+    tab1, tab2, tab3 = st.tabs(["📋 Propiedades", "📈 Estadísticas", "🔍 Búsqueda"])
     
     with tab1:
         st.subheader("Listado Completo de Propiedades")
@@ -72,38 +79,23 @@ def main():
         
         with col1:
             st.subheader("Distribución por Estado")
-            if 'estado' in df_filtrado.columns:
+            if 'estado' in df_filtrado.columns and not df_filtrado.empty:
                 fig = px.pie(df_filtrado, names='estado', title='')
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No hay datos de estado para mostrar")
         
         with col2:
             st.subheader("Propiedades por Zona")
-            if 'zona' in df_filtrado.columns:
+            if 'zona' in df_filtrado.columns and not df_filtrado.empty:
                 fig = px.bar(df_filtrado['zona'].value_counts().head(10), 
                             title='Top 10 Zonas',
                             labels={'value': 'Número', 'index': 'Zona'})
                 st.plotly_chart(fig, use_container_width=True)
+            else:
+                st.info("No hay datos de zona para mostrar")
     
     with tab3:
-        st.subheader("Evolución Temporal")
-        
-        # Estadísticas históricas
-        stats_df = db.obtener_estadisticas_historicas()
-        if not stats_df.empty:
-            stats_df['fecha'] = pd.to_datetime(stats_df['fecha'])
-            
-            fig = go.Figure()
-            fig.add_trace(go.Scatter(x=stats_df['fecha'], y=stats_df['precio_promedio'],
-                                    mode='lines+markers', name='Precio Promedio'))
-            fig.add_trace(go.Scatter(x=stats_df['fecha'], y=stats_df['total_propiedades'],
-                                    mode='lines+markers', name='Total Propiedades'))
-            
-            fig.update_layout(title="Evolución Histórica")
-            st.plotly_chart(fig, use_container_width=True)
-        else:
-            st.info("No hay suficientes datos históricos para mostrar evolución")
-    
-    with tab4:
         st.subheader("Búsqueda Avanzada")
         
         col1, col2 = st.columns(2)
@@ -117,19 +109,37 @@ def main():
             metros_min = st.number_input("Metros mínimos:", min_value=0, value=0)
         
         # Aplicar búsqueda
-        if termino_busqueda:
+        if termino_busqueda and not df_filtrado.empty:
             mask = df_filtrado.astype(str).apply(lambda x: x.str.contains(termino_busqueda, case=False).any(), axis=1)
             df_busqueda = df_filtrado[mask]
         else:
             df_busqueda = df_filtrado
         
-        # Aplicar filtros numéricos
-        df_busqueda = df_busqueda[df_busqueda['precio'].apply(lambda x: extraer_numero(x) >= precio_min)]
-        df_busqueda = df_busqueda[df_busqueda['habitaciones'].apply(lambda x: extraer_numero(x) >= habitaciones_min)]
-        df_busqueda = df_busqueda[df_busqueda['metros'].apply(lambda x: extraer_numero(x) >= metros_min)]
+        # Aplicar filtros numéricos SOLO si existen las columnas
+        if not df_busqueda.empty:
+            if 'habitaciones' in df_busqueda.columns:
+                df_busqueda = df_busqueda[df_busqueda['habitaciones'].apply(lambda x: extraer_numero(x) >= habitaciones_min)]
+            if 'metros' in df_busqueda.columns:
+                df_busqueda = df_busqueda[df_busqueda['metros'].apply(lambda x: extraer_numero(x) >= metros_min)]
+            if 'precio' in df_busqueda.columns:
+                df_busqueda = df_busqueda[df_busqueda['precio'].apply(lambda x: extraer_numero(x) >= precio_min)]
         
         st.write(f"Resultados: {len(df_busqueda)} propiedades")
-        st.dataframe(df_busqueda, use_container_width=True)
+        if not df_busqueda.empty:
+            st.dataframe(df_busqueda, use_container_width=True)
+        else:
+            st.info("No se encontraron propiedades con los filtros aplicados")
+
+def obtener_datos_db():
+    """Obtener datos de la base de datos SQLite"""
+    try:
+        conn = sqlite3.connect('dossiers_inmobiliarios.db')
+        query = "SELECT archivo, precio, habitaciones, metros, zona, estado, fecha_analisis FROM propiedades WHERE activo = 1 ORDER BY fecha_analisis DESC"
+        df = pd.read_sql_query(query, conn)
+        conn.close()
+        return df
+    except:
+        return pd.DataFrame()
 
 def calcular_promedio_streamlit(df, campo):
     """Calcula promedios para Streamlit"""
