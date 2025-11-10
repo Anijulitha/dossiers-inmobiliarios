@@ -3,146 +3,125 @@ import pandas as pd
 import plotly.express as px
 import sqlite3
 from datetime import datetime, timedelta
+import os
 
-# ===================== CONFIGURACIÓN =====================
+# ===================== CONFIG =====================
 st.set_page_config(
     page_title="Dossiers Inmobiliarios PRO",
     page_icon="house",
     layout="wide",
-    initial_sidebar_state="expanded"
+    initial_sidebar_state="expanded",
+    menu_items={
+        'Get Help': 'https://wa.me/615592892',  # PON AQUÍ TU WHATSAPP
+        'Report a bug': 'mailto:anijuli2893@gmail.com',
+        'About': 'Dashboard Inmobiliario PRO - Licencia 2.500€'
+    }
 )
 
 # ===================== FUNCIÓN EXTRAER NÚMERO =====================
 def extraer_numero(texto):
-    """Extrae número de cualquier texto (1.234 €, 3 hab, 85 m², etc.)"""
-    if pd.isna(texto):
-        return 0
-    texto = str(texto).replace('€', '').replace('hab', '').replace('m²', '').replace('m2', '')
-    texto = texto.replace('.', '').replace(',', '.').strip()
-    try:
-        return float(texto) if texto else 0
-    except:
-        return 0
+    if pd.isna(texto): return 0
+    texto = str(texto).replace('€','').replace('hab','').replace('m²','').replace('m2','').replace('.','').replace(',','.').strip()
+    try: return float(texto) if texto else 0
+    except: return 0
 
-# ===================== OBTENER DATOS (BLINDADO) =====================
-@st.cache_data(ttl=300)  # Se actualiza cada 5 minutos
-def obtener_datos_db():
+# ===================== CARGAR DATOS =====================
+@st.cache_data(ttl=180)  # 3 minutos
+def cargar_datos():
     try:
         conn = sqlite3.connect('dossiers_inmobiliarios.db')
         query = "SELECT * FROM propiedades WHERE activo = 1 ORDER BY fecha_analisis DESC"
         df = pd.read_sql_query(query, conn)
         conn.close()
 
-        # RENOMBRADO AUTOMÁTICO DE COLUMNAS (nunca más KeyError)
-        rename_dict = {
-            'habitacione': 'habitaciones', 'habitación': 'habitaciones',
-            'hab': 'habitaciones', 'dormitorios': 'habitaciones',
+        # Normalizar nombres de columnas
+        rename = {
+            'habitacione': 'habitaciones', 'habitación': 'habitaciones', 'hab': 'habitaciones', 'dormitorios': 'habitaciones',
             'metro': 'metros', 'm2': 'metros', 'm²': 'metros', 'superficie': 'metros'
         }
-        df.rename(columns=rename_dict, inplace=True)
-        
-        # Convertir fecha
-        if 'fecha_analisis' in df.columns:
-            df['fecha_analisis'] = pd.to_datetime(df['fecha_analisis'], errors='coerce')
-        
+        df.rename(columns=rename, inplace=True)
+        df['fecha_analisis'] = pd.to_datetime(df['fecha_analisis'], errors='coerce')
         return df
     except Exception as e:
-        st.error(f"Error conectando a la base de datos: {e}")
+        st.error(f"Error BD: {e}")
         return pd.DataFrame()
 
-# ===================== CARGAR DATOS =====================
-df = obtener_datos_db()
-
+df = cargar_datos()
 if df.empty:
-    st.warning("No hay datos en la base de datos.")
-    st.info("Ejecuta primero: ⁠ python extractor_dossiers.py ⁠")
+    st.error("No hay datos. Ejecuta: python extractor_dossiers.py")
     st.stop()
 
-# ===================== SIDEBAR FILTROS =====================
-st.sidebar.title("Filtros Avanzados")
+# ===================== SIDEBAR =====================
+st.sidebar.image("https://i.imgur.com/8QHZj3J.png", width=200)  # PON TU LOGO AQUÍ
+st.sidebar.markdown("## Filtros")
 
-# Fecha
 fecha_min = st.sidebar.date_input("Desde", datetime.now() - timedelta(days=90))
 fecha_max = st.sidebar.date_input("Hasta", datetime.now())
 
-# Aplicar filtro fecha
-mask_fecha = (df['fecha_analisis'].dt.date >= fecha_min) & (df['fecha_analisis'].dt.date <= fecha_max)
-df = df[mask_fecha]
+df = df[(df['fecha_analisis'].dt.date >= fecha_min) & (df['fecha_analisis'].dt.date <= fecha_max)]
 
-# ===================== TÍTULO =====================
-st.title("Dossiers Inmobiliarios - Dashboard PRO")
-st.markdown(f"*Total propiedades:* {len(df)} | *Período:* {fecha_min} → {fecha_max}")
+# ===================== HEADER =====================
+st.title("Dossiers Inmobiliarios PRO")
+st.markdown(f"*{len(df)} propiedades* | {fecha_min} → {fecha_max}")
 
 # ===================== KPIs =====================
-col1, col2, col3, col4 = st.columns(4)
+c1, c2, c3, c4 = st.columns(4)
+precios = [extraer_numero(p) for p in df['precio'] if extraer_numero(p)>0]
+habs = [extraer_numero(h) for h in df.get('habitaciones', []) if extraer_numero(h)>0]
+metros = [extraer_numero(m) for m in df.get('metros', []) if extraer_numero(m)>0]
 
-precios = [extraer_numero(p) for p in df['precio'] if extraer_numero(p) > 0]
-hab = [extraer_numero(h) for h in df['habitaciones'] if extraer_numero(h) > 0]
-metros = [extraer_numero(m) for m in df['metros'] if extraer_numero(m) > 0]
+c1.metric("Propiedades", len(df))
+c2.metric("Precio medio", f"€{sum(precios)/len(precios):,.0f}".replace(",",".") if precios else "N/A")
+c3.metric("Hab. media", f"{sum(habs)/len(habs):.1f}" if habs else "N/A")
+c4.metric("m² medios", f"{sum(metros)/len(metros):.0f}" if metros else "N/A")
 
-with col1:
-    st.metric("Propiedades", len(df))
-with col2:
-    st.metric("Precio medio", f"€ {sum(precios)/len(precios):,.0f}".replace(",", ".") if precios else "N/A")
-with col3:
-    st.metric("Hab. media", f"{sum(hab)/len(hab):.1f}" if hab else "N/A")
-with col4:
-    st.metric("Metros medios", f"{sum(metros)/len(metros):.0f} m²" if metros else "N/A")
-
-st.markdown("---")
-
-# ===================== PESTAÑAS =====================
-tab1, tab2, tab3 = st.tabs(["Listado Completo", "Estadísticas", "Búsqueda PRO"])
+# ===================== TABS =====================
+tab1, tab2, tab3 = st.tabs(["Listado", "Gráficos", "Búsqueda PRO"])
 
 with tab1:
-    st.dataframe(df, use_container_width=True, height=600)
-    
-    if st.button("Exportar a Excel", type="primary"):
-        df.to_excel("dossiers_exportados.xlsx", index=False)
-        st.success("¡Exportado! Descarga: dossiers_exportados.xlsx")
+    st.dataframe(df.drop(columns=['id','activo'], errors='ignore'), use_container_width=True, height=700)
+    csv = df.to_csv(index=False).encode()
+    st.download_button("Descargar CSV", csv, "dossiers.csv", "text/csv")
 
 with tab2:
     col1, col2 = st.columns(2)
-    
     with col1:
         if 'estado' in df.columns:
             fig = px.pie(df['estado'].value_counts(), names=df['estado'].value_counts().index, title="Estado")
             st.plotly_chart(fig, use_container_width=True)
-    
     with col2:
         if 'zona' in df.columns:
-            top_zonas = df['zona'].value_counts().head(10)
-            fig = px.bar(x=top_zonas.index, y=top_zonas.values, labels={'x': 'Zona', 'y': 'Propiedades'})
-            fig.update_layout(title="Top 10 Zonas")
+            top = df['zona'].value_counts().head(10)
+            fig = px.bar(x=top.index, y=top.values, labels={'x':'Zona','y':'Nº'}, title="Top 10 Zonas")
             st.plotly_chart(fig, use_container_width=True)
 
 with tab3:
-    st.subheader("Búsqueda Avanzada")
-    
-    col1, col2 = st.columns(2)
-    with col1:
-        busqueda = st.text_input("Buscar en cualquier campo")
-        precio_min = st.number_input("Precio mínimo (€)", min_value=0, value=0, step=10000)
-    with col2:
-        hab_min = st.number_input("Habitaciones mínimas", min_value=0, value=0)
-        metros_min = st.number_input("Metros mínimos", min_value=0, value=0)
+    st.subheader("Búsqueda avanzada")
+    c1, c2 = st.columns(2)
+    with c1:
+        texto = st.text_input("Palabra clave")
+        pmin = st.number_input("Precio mínimo €", 0, step=10000)
+    with c2:
+        habmin = st.number_input("Habitaciones mín.", 0)
+        mmin = st.number_input("Metros mín.", 0)
 
-    df_bus = df.copy()
-    
-    if busqueda:
-        mask = df_bus.astype(str).apply(lambda x: x.str.contains(busqueda, case=False, na=False)).any(axis=1)
-        df_bus = df_bus[mask]
-    
-    if precio_min > 0 and 'precio' in df_bus.columns:
-        df_bus = df_bus[df_bus['precio'].apply(extraer_numero) >= precio_min]
-    
-    if hab_min > 0:
-        col_hab = next((c for c in ['habitaciones', 'habitacione', 'hab', 'dormitorios'] if c in df_bus.columns), None)
-        if col_hab:
-            df_bus = df_bus[df_bus[col_hab].apply(extraer_numero) >= hab_min]
-    
-    if metros_min > 0 and 'metros' in df_bus.columns:
-        df_bus = df_bus[df_bus['metros'].apply(extraer_numero) >= metros_min]
-    
-    st.write(f"*{len(df_bus)} propiedades encontradas*")
-    st.dataframe(df_bus, use_container_width=True)
+    df2 = df.copy()
+    if texto:
+        df2 = df2[df2.astype(str).apply(lambda x: x.str.contains(texto, case=False, na=False)).any(axis=1)]
+    if pmin > 0 and 'precio' in df2.columns:
+        df2 = df2[df2['precio'].apply(extraer_numero) >= pmin]
+    if habmin > 0:
+        col = next((c for c in ['habitaciones','habitacione','hab'] if c in df2.columns), None)
+        if col: df2 = df2[df2[col].apply(extraer_numero) >= habmin]
+    if mmin > 0 and 'metros' in df2.columns:
+        df2 = df2[df2['metros'].apply(extraer_numero) >= mmin]
+
+    st.write(f"*{len(df2)} resultados*")
+    st.dataframe(df2, use_container_width=True)
+
+# ===================== FOOTER =====================
+st.markdown("---")
+st.markdown("""
+*Dossiers Inmobiliarios PRO* | Licencia única 2.500€ + IVA  
+Contacto: anijuli2893@gmail.com | WhatsApp: +34 615 592 892
+""")
